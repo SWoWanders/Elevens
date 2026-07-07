@@ -1,0 +1,1027 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover, maximum-scale=1" />
+<title>Elfer raus! — Solo vs CPU</title>
+
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Silkscreen:wght@400;700&family=Space+Mono:wght@400;700&family=JetBrains+Mono:wght@400;700;800&display=swap" rel="stylesheet">
+
+<!-- Catches any script error (load failure or runtime) and prints it directly
+     on screen. Mobile browsers make devtools awkward to reach, so this turns
+     a silent blank page into a readable message instead. -->
+<script>
+  function showBootError(msg) {
+    var el = document.getElementById('boot-error');
+    if (!el) {
+      el = document.createElement('pre');
+      el.id = 'boot-error';
+      el.style.cssText = 'position:fixed;inset:0;margin:0;background:#1a0000;color:#ff9d9d;padding:16px;font:12px/1.5 monospace;white-space:pre-wrap;z-index:99999;overflow:auto;';
+      document.addEventListener('DOMContentLoaded', function () { document.body.appendChild(el); });
+    }
+    el.textContent += msg + '\n';
+  }
+  window.addEventListener('error', function (e) {
+    showBootError('Error: ' + e.message + (e.filename ? ' (' + e.filename.split('/').pop() + ':' + e.lineno + ')' : ''));
+  });
+  window.addEventListener('unhandledrejection', function (e) {
+    showBootError('Unhandled promise rejection: ' + (e.reason && e.reason.message ? e.reason.message : e.reason));
+  });
+</script>
+
+<script src="https://cdn.tailwindcss.com"></script>
+<script src="https://unpkg.com/react@18.3.1/umd/react.production.min.js"></script>
+<script src="https://unpkg.com/react-dom@18.3.1/umd/react-dom.production.min.js"></script>
+<script src="https://unpkg.com/@babel/standalone@7.24.7/babel.min.js"></script>
+
+<style>
+  :root{
+    --bg-void:#0a0d0c;
+    --felt:#10241c;
+    --felt-line:#1c3a2c;
+    --brass:#c9a24b;
+    --ivory:#eee7d8;
+    --red:#ff4d5e;
+    --yellow:#ffcb3d;
+    --green:#33d17a;
+    --blue:#3fa9f5;
+  }
+  html,body,#root{height:100%;}
+  body{
+    margin:0;
+    position:fixed;
+    inset:0;
+    width:100%;
+    background:radial-gradient(1200px 800px at 50% -10%, #14261d 0%, var(--bg-void) 60%);
+    color:var(--ivory);
+    font-family:'Space Mono', monospace;
+    overscroll-behavior:none;
+  }
+  .font-display{font-family:'Silkscreen', monospace; letter-spacing:0.5px;}
+  .font-num{font-family:'JetBrains Mono', monospace;}
+
+  .marquee{
+    border:2px solid var(--brass);
+    border-radius:6px;
+    background:linear-gradient(180deg,#14241c,#0d1912);
+    box-shadow:0 0 18px rgba(201,162,75,0.25), inset 0 0 12px rgba(201,162,75,0.08);
+  }
+
+  /* ================= SHARED TABLETOP BOARD ================= */
+  /* One continuous felt surface holding all four color rows stacked, the
+     way a real table has one play area, not four separate boxes. */
+  .tabletop{
+    border:1.5px solid var(--felt-line);
+    background:var(--felt);
+    border-radius:10px;
+    margin:0.6rem;
+    padding:0.4rem 0.6rem;
+    display:flex;
+    flex-direction:column;
+    flex:1;
+    min-height:0;
+    overflow-y:auto;
+  }
+  .color-row{
+    display:flex;
+    align-items:center;
+    gap:0.5rem;
+    padding:0.45rem 0;
+    border-bottom:1px solid rgba(255,255,255,0.06);
+  }
+  .color-row:last-child{ border-bottom:none; }
+  .color-row.drop-active{ box-shadow:0 0 0 2px var(--row-glow, var(--brass)) inset; border-radius:6px; }
+  .color-row-label{
+    width:44px; flex-shrink:0;
+    display:flex; flex-direction:column; align-items:flex-start;
+  }
+
+  .row-cards{
+    flex:1; min-width:0;
+    display:flex; align-items:center; gap:0.3rem;
+    overflow-x:auto; overflow-y:hidden;
+    -webkit-overflow-scrolling:touch;
+  }
+  .row-cards::-webkit-scrollbar{ height:4px; }
+  .row-cards::-webkit-scrollbar-thumb{ background:var(--felt-line); border-radius:2px; }
+
+  .hand-strip{
+    display:flex; gap:0.5rem; overflow-x:auto; padding:0.75rem;
+    -webkit-overflow-scrolling:touch;
+  }
+  .hand-strip::-webkit-scrollbar{ height:6px; }
+  .hand-strip::-webkit-scrollbar-thumb{ background:var(--felt-line); border-radius:3px; }
+
+  /* ---------- Draw preview strip: drawn cards sit here briefly, visible
+     and separate from the hand, before merging in ---------- */
+  .draw-preview-strip{
+    display:flex; justify-content:flex-end; align-items:center; gap:0.4rem;
+    padding:0.35rem 0.75rem 0;
+    min-height:0;
+  }
+  .preview-card-pop{ animation:popIn 0.25s ease-out; }
+  @keyframes popIn{
+    0%{ transform:scale(0.4) translateY(8px); opacity:0; }
+    100%{ transform:scale(1) translateY(0); opacity:1; }
+  }
+  .hand-card-enter{ animation:handEnter 0.3s ease-out; }
+  @keyframes handEnter{
+    0%{ transform:translateY(-14px) scale(0.85); opacity:0.3; }
+    100%{ transform:translateY(0) scale(1); opacity:1; }
+  }
+
+
+
+  .card{
+    flex:0 0 auto; width:58px; height:82px; border-radius:8px;
+    display:flex; align-items:center; justify-content:center;
+    font-size:1.4rem; font-weight:800; cursor:pointer; user-select:none;
+    transition:transform 0.15s ease, box-shadow 0.15s ease, opacity 0.15s ease;
+    border:2px solid rgba(0,0,0,0.35);
+    position:relative;
+    touch-action:manipulation;
+  }
+  .card.selected{ transform:translateY(-10px) scale(1.05); box-shadow:0 6px 18px rgba(0,0,0,0.5); }
+  .card.playable-glow{ box-shadow:0 0 0 3px #fff8, 0 0 14px 2px currentColor; }
+  .card.disabled{ opacity:0.45; cursor:not-allowed; }
+  .card-red{ background:var(--red); color:#3a0006; }
+  .card-yellow{ background:var(--yellow); color:#3a2c00; }
+  .card-green{ background:var(--green); color:#00301a; }
+  .card-blue{ background:var(--blue); color:#00233a; }
+  .card-back{ width:40px;height:56px;border-radius:6px; background:repeating-linear-gradient(45deg,var(--felt-line),var(--felt-line) 4px,var(--felt) 4px,var(--felt) 8px); border:2px solid var(--brass); }
+
+
+  .turn-pulse{ animation:pulseGlow 1.4s ease-in-out infinite; }
+  @keyframes pulseGlow{ 0%,100%{ box-shadow:0 0 0px var(--brass); } 50%{ box-shadow:0 0 16px 2px var(--brass); } }
+
+  .thinking-dots span{ animation:blink 1.2s infinite; }
+  .thinking-dots span:nth-child(2){ animation-delay:0.2s; }
+  .thinking-dots span:nth-child(3){ animation-delay:0.4s; }
+  @keyframes blink{ 0%,80%,100%{opacity:0.2;} 40%{opacity:1;} }
+
+  .btn{
+    font-family:'Silkscreen', monospace; background:var(--brass); color:#241a05;
+    border:none; border-radius:6px; padding:0.6rem 1.1rem; cursor:pointer;
+    letter-spacing:1px; transition:transform 0.1s ease, filter 0.1s ease;
+    touch-action:manipulation;
+  }
+  .btn:hover{ filter:brightness(1.08); }
+  .btn:active{ transform:scale(0.97); }
+  .btn:disabled{ opacity:0.4; cursor:not-allowed; }
+  .btn-ghost{ background:transparent; border:2px solid var(--brass); color:var(--brass); }
+  .opt-btn{
+    border:1.5px solid var(--felt-line); background:var(--felt); color:var(--ivory);
+    border-radius:6px; padding:0.5rem 0.8rem; cursor:pointer; font-family:'Space Mono', monospace;
+  }
+  .opt-btn.active{ border-color:var(--brass); color:var(--brass); }
+</style>
+</head>
+<body>
+<div id="root"></div>
+
+<script type="text/babel" data-presets="react">
+const { useState, useEffect, useRef, useCallback } = React;
+
+// ============================================================
+// SOUND ENGINE — synthesized Web Audio SFX, no external assets
+// ============================================================
+const Sound = (() => {
+  let ctx = null;
+  function ac() {
+    if (!ctx) ctx = new (window.AudioContext || window.webkitAudioContext)();
+    if (ctx.state === "suspended") ctx.resume();
+    return ctx;
+  }
+  function tone({ freq, duration, type = "square", startTime = 0, gain = 0.15, glideTo = null }) {
+    const c = ac();
+    const osc = c.createOscillator();
+    const gainNode = c.createGain();
+    osc.type = type;
+    osc.frequency.setValueAtTime(freq, c.currentTime + startTime);
+    if (glideTo) osc.frequency.exponentialRampToValueAtTime(glideTo, c.currentTime + startTime + duration);
+    gainNode.gain.setValueAtTime(gain, c.currentTime + startTime);
+    gainNode.gain.exponentialRampToValueAtTime(0.0001, c.currentTime + startTime + duration);
+    osc.connect(gainNode).connect(c.destination);
+    osc.start(c.currentTime + startTime);
+    osc.stop(c.currentTime + startTime + duration + 0.02);
+  }
+  return {
+    place() {
+      tone({ freq: 520, duration: 0.09, type: "square", gain: 0.18 });
+      tone({ freq: 780, duration: 0.06, type: "square", startTime: 0.05, gain: 0.12 });
+    },
+    pass() { tone({ freq: 300, duration: 0.1, type: "triangle", gain: 0.1 }); },
+    error() {
+      tone({ freq: 160, duration: 0.16, type: "square", gain: 0.16 });
+      tone({ freq: 110, duration: 0.22, type: "square", startTime: 0.1, gain: 0.16 });
+    },
+    yourTurn() {
+      tone({ freq: 660, duration: 0.1, type: "sine", gain: 0.15 });
+      tone({ freq: 880, duration: 0.12, type: "sine", startTime: 0.11, gain: 0.15 });
+    },
+    victory() {
+      [523, 659, 784, 1046].forEach((f, i) => tone({ freq: f, duration: 0.22, type: "square", startTime: i * 0.14, gain: 0.16 }));
+    },
+  };
+})();
+
+// ============================================================
+// GAME ENGINE — pure functions, matching authentic "Elfer raus!" rules:
+//  - 80 cards, 4 colors, 1-20 each
+//  - Fixed deal counts by player count; leftover cards form a face-down
+//    DRAW PILE that is actively used during play (confirmed against
+//    German Wikipedia + multiple independent rules sources)
+//  - Whoever holds the red 11 opens the game by placing it in the middle;
+//    if nobody has it, fall back to yellow, then green, then blue; if no
+//    11 was dealt to anyone at all, reshuffle and redeal
+//  - On your turn: if you hold a legal card, you must play at least one,
+//    then may voluntarily keep playing more or stop early (tactical
+//    withholding). If you hold NO legal card, you must draw — one at a
+//    time, up to 3 — playing immediately if a drawn card matches (turn
+//    ends there); if none of up to 3 match, your turn just ends and you
+//    keep the drawn cards. If the draw pile is empty, you simply pass.
+// ============================================================
+const COLORS = ["red", "yellow", "green", "blue"];
+const COLOR_LABEL = { red: "Red", yellow: "Yellow", green: "Green", blue: "Blue" };
+const STARTING_COLOR_PRIORITY = ["red", "yellow", "green", "blue"];
+
+function createDeck() {
+  const deck = [];
+  for (const color of COLORS) for (let value = 1; value <= 20; value++) deck.push({ color, value });
+  return deck;
+}
+function shuffle(array) {
+  const arr = [...array];
+  for (let i = arr.length - 1; i > 0; i--) {
+    const j = Math.floor(Math.random() * (i + 1));
+    [arr[i], arr[j]] = [arr[j], arr[i]];
+  }
+  return arr;
+}
+
+/** Official fixed deal counts by player count; the remainder becomes the draw pile. */
+const DEAL_COUNTS = { 2: 20, 3: 20, 4: 15, 5: 12, 6: 10 };
+
+function dealCards(playerCount) {
+  const deck = shuffle(createDeck());
+  const perPlayer = DEAL_COUNTS[playerCount] || Math.floor(deck.length / playerCount);
+  const hands = [];
+  let cursor = 0;
+  for (let i = 0; i < playerCount; i++) {
+    hands.push(deck.slice(cursor, cursor + perPlayer));
+    cursor += perPlayer;
+  }
+  return { hands, drawPile: deck.slice(cursor) };
+}
+
+/** Find who holds the red 11 (or the next color in priority order). Null if nobody dealt any 11. */
+function findStartingPlayer(hands) {
+  for (const color of STARTING_COLOR_PRIORITY) {
+    const idx = hands.findIndex((hand) => hand.some((c) => c.color === color && c.value === 11));
+    if (idx !== -1) {
+      const card = hands[idx].find((c) => c.color === color && c.value === 11);
+      return { playerIndex: idx, card };
+    }
+  }
+  return null;
+}
+
+function createBoard() {
+  const board = {};
+  for (const color of COLORS) board[color] = { opened: false, min: 11, max: 11 };
+  return board;
+}
+function isValidMove(board, card) {
+  const row = board[card.color];
+  if (!row) return false;
+  if (!row.opened) return card.value === 11;
+  return card.value === row.min - 1 || card.value === row.max + 1;
+}
+function hasAnyValidMove(board, hand) { return hand.some((c) => isValidMove(board, c)); }
+function applyMove(board, card) {
+  const newBoard = JSON.parse(JSON.stringify(board));
+  const row = newBoard[card.color];
+  if (!row.opened) { row.opened = true; row.min = 11; row.max = 11; }
+  else if (card.value === row.min - 1) row.min = card.value;
+  else if (card.value === row.max + 1) row.max = card.value;
+  return newBoard;
+}
+function calculatePenalty(hand) { return hand.reduce((s, c) => s + c.value, 0); }
+function removeCard(hand, card) {
+  const idx = hand.findIndex((c) => c.color === card.color && c.value === card.value);
+  if (idx === -1) return { hand, removed: null };
+  return { hand: [...hand.slice(0, idx), ...hand.slice(idx + 1)], removed: hand[idx] };
+}
+
+/**
+ * Resolves an entire forced-draw sequence (up to 3 cards) in one pure,
+ * synchronous step — no timers, no mutable closures threaded across async
+ * callbacks. This is deliberately atomic: it either fully commits or it
+ * doesn't run at all, so a card can never be "in flight" and lost or
+ * duplicated by an overlapping call. Any on-screen pacing/preview is purely
+ * cosmetic and layered on top afterward — it never gates this result.
+ *
+ * Rule: draw one at a time, up to 3. If a drawn card matches the board,
+ * play it immediately and stop (turn ends). Otherwise keep all drawn
+ * cards in hand; turn ends regardless once the draw sequence is done.
+ */
+function resolveForcedDraw(pile, hands, board, playerIndex) {
+  let workingPile = [...pile];
+  let workingHands = hands.map((h) => [...h]);
+  let workingBoard = board;
+  const drawnCards = [];
+  let playedCard = null;
+
+  for (let i = 0; i < 3 && workingPile.length > 0; i++) {
+    const card = workingPile.pop();
+    drawnCards.push(card);
+    if (isValidMove(workingBoard, card)) {
+      workingBoard = applyMove(workingBoard, card);
+      playedCard = card;
+      break; // must play it immediately — drawing stops here
+    }
+    workingHands[playerIndex] = [...workingHands[playerIndex], card];
+  }
+
+  return { pile: workingPile, hands: workingHands, board: workingBoard, drawnCards, playedCard };
+}
+
+// ---- Bot heuristic: pick the single best legal card from a hand ----
+// Prefers (1) opening a brand-new row, then (2) cards that set up more of
+// its own follow-up cards to become playable, with light randomness so
+// bots don't feel identical to each other.
+function chooseBestCard(board, hand, legal) {
+  function chainDepth(card, boardAfter) {
+    let depth = 0, b = boardAfter;
+    let pool = hand.filter((c) => !(c.color === card.color && c.value === card.value));
+    let progressed = true;
+    while (progressed) {
+      progressed = false;
+      for (const c of pool) {
+        if (isValidMove(b, c)) { depth++; b = applyMove(b, c); pool = pool.filter((x) => x !== c); progressed = true; break; }
+      }
+    }
+    return depth;
+  }
+  const scored = legal.map((card) => {
+    const opensRow = !board[card.color].opened;
+    const depth = chainDepth(card, applyMove(board, card));
+    return { card, score: (opensRow ? 5 : 0) + depth + Math.random() * 0.5 };
+  });
+  scored.sort((a, b) => b.score - a.score);
+  return scored[0].card;
+}
+
+// Plan a bot's "I have a legal move" turn: the first card is mandatory
+// (matches the real rule that you must play at least one if you can),
+// then each further card is an optional continuation with a random chance
+// to stop early — tactical withholding, same as a human choosing to pass
+// even with legal plays left.
+function planBotPlayTurn(board, hand) {
+  const plan = [];
+  let workingBoard = board;
+  let workingHand = [...hand];
+  while (true) {
+    const legal = workingHand.filter((c) => isValidMove(workingBoard, c));
+    if (legal.length === 0) break;
+    const card = chooseBestCard(workingBoard, workingHand, legal);
+    plan.push(card);
+    workingBoard = applyMove(workingBoard, card);
+    workingHand = workingHand.filter((c) => !(c.color === card.color && c.value === card.value));
+    if (workingHand.length === 0) break; // always finish the round if this card wins it
+    const stillLegal = workingHand.some((c) => isValidMove(workingBoard, c));
+    if (!stillLegal) break;
+    // Strategic withholding: real players often stop even with legal plays
+    // left, to avoid opening opportunities for opponents. ~25% chance per step.
+    if (Math.random() > 0.75) break;
+  }
+  return plan;
+}
+
+// Continuation-only plan for a bot that has ALREADY made its mandatory
+// play this turn (e.g. the forced round-opening 11). Unlike
+// planBotPlayTurn, this may legitimately return an empty array — having
+// no further legal move here just means "end turn", never "must draw",
+// since the draw rule only applies at the very start of a turn.
+function planBotContinuation(board, hand) {
+  const plan = [];
+  let workingBoard = board;
+  let workingHand = [...hand];
+  while (true) {
+    const legal = workingHand.filter((c) => isValidMove(workingBoard, c));
+    if (legal.length === 0) break;
+    if (Math.random() > 0.75) break;
+    const card = chooseBestCard(workingBoard, workingHand, legal);
+    plan.push(card);
+    workingBoard = applyMove(workingBoard, card);
+    workingHand = workingHand.filter((c) => !(c.color === card.color && c.value === card.value));
+    if (workingHand.length === 0) break;
+  }
+  return plan;
+}
+
+// ============================================================
+// UI COMPONENTS
+// ============================================================
+function Card({ card, selected, playable, disabled, onClick }) {
+  const cls = ["card", `card-${card.color}`, selected ? "selected" : "", playable ? "playable-glow" : "", disabled ? "disabled" : ""].join(" ");
+  return (
+    <div className={cls} style={{ color: `var(--${card.color})` }} onClick={disabled ? undefined : onClick}>
+      <span className="font-num" style={{ color: "inherit", filter: "brightness(0.3)" }}>{card.value}</span>
+    </div>
+  );
+}
+
+function ColorRow({ color, row, dragOver, onDragOver, onDragLeave, onDrop, onRowTap }) {
+  const glowVar = { "--row-glow": `var(--${color})` };
+  const sequence = [];
+  if (row.opened) for (let v = row.min; v <= row.max; v++) sequence.push(v);
+  return (
+    <div
+      className={`color-row ${dragOver ? "drop-active" : ""}`}
+      style={glowVar}
+      onDragOver={(e) => { e.preventDefault(); onDragOver && onDragOver(); }}
+      onDragLeave={onDragLeave}
+      onDrop={onDrop}
+      onClick={onRowTap}
+    >
+      <div className="color-row-label">
+        <span className="font-display text-[10px]" style={{ color: `var(--${color})` }}>{COLOR_LABEL[color]}</span>
+        <span className="text-[8px] opacity-50 font-num">{row.opened ? `${row.min}–${row.max}` : "closed"}</span>
+      </div>
+      <div className="row-cards">
+        {row.opened ? sequence.map((v) => (
+          <div key={v} className="card" style={{
+            width: "30px", height: "42px", fontSize: "0.75rem", flexShrink: 0,
+            background: `var(--${color})`, opacity: v === 11 ? 1 : 0.85,
+            boxShadow: (v === row.min || v === row.max) ? "0 0 6px 1px currentColor" : "none",
+            color: `var(--${color})`,
+          }}>
+            <span className="font-num" style={{ color: "inherit", filter: "brightness(0.25)" }}>{v}</span>
+          </div>
+        )) : <div className="card-back" style={{ width: "32px", height: "44px" }} title="Play the 11 to open this row" />}
+      </div>
+    </div>
+  );
+}
+
+// ============================================================
+// MAIN APP
+// ============================================================
+function App() {
+  const [screen, setScreen] = useState("setup"); // setup | playing | roundOver | matchOver
+  const [opponentCount, setOpponentCount] = useState(2);
+  const [roundsToPlay, setRoundsToPlay] = useState(3);
+  const [roundNumber, setRoundNumber] = useState(1);
+  const [players, setPlayers] = useState([]); // [{name, isBot}]
+  const [hands, setHands] = useState([]); // hands[playerIndex] = [card,...]
+  const [board, setBoard] = useState(createBoard());
+  const [drawPile, setDrawPile] = useState([]);
+  const [turnPlayCount, setTurnPlayCount] = useState(0); // cards played so far THIS turn (gates mandatory first play)
+  const [drawPreview, setDrawPreview] = useState([]); // human's just-drawn cards, shown briefly before merging into hand
+  const [isDrawing, setIsDrawing] = useState(false); // true from the instant Draw Card is tapped until the sequence resolves
+  const [drawStatus, setDrawStatus] = useState(""); // explicit human-readable stage text during a draw sequence
+  const [currentIndex, setCurrentIndex] = useState(0);
+  const [lastAction, setLastAction] = useState(null);
+  const [roundWinnerIndex, setRoundWinnerIndex] = useState(null);
+  const [roundScores, setRoundScores] = useState({});
+  const [cumulativeScores, setCumulativeScores] = useState({});
+  const [selectedCard, setSelectedCard] = useState(null);
+  const [dragOverColor, setDragOverColor] = useState(null);
+  const [errorMsg, setErrorMsg] = useState("");
+  const [botThinking, setBotThinking] = useState(false);
+  const prevTurnRef = useRef(null);
+  const botTimeoutRef = useRef(null);
+  // Incremented every time a turn genuinely ends. Any in-flight async chain
+  // (bot plays, forced draws) captures the token at its start and checks it
+  // before every state mutation — if the token has moved on (because the
+  // turn ended some other way in the meantime), the stale chain aborts
+  // instead of corrupting state. This is what prevents card loss from any
+  // overlapping/duplicate turn processing.
+  const turnTokenRef = useRef(0);
+  // Synchronous re-entry guard for runForcedDraw. React state (isDrawing)
+  // only updates on the next render — not fast enough to block a second
+  // call happening in the same tick (e.g. a fast double-tap). That gap is a
+  // confirmed race: two overlapping draw chains, each working from its own
+  // stale snapshot, silently clobber each other's state updates and a card
+  // vanishes. A plain ref is checked and set synchronously, so two chains
+  // can never run at once regardless of render timing.
+  const drawInProgressRef = useRef(false);
+
+  const isMyTurn = screen === "playing" && currentIndex === 0;
+
+  const showError = (msg) => {
+    setErrorMsg(msg);
+    Sound.error();
+    setTimeout(() => setErrorMsg(""), 1800);
+  };
+
+  // ---- deal a round and determine/apply the forced red-11 opening ----
+  const dealRoundAndBegin = (playerList) => {
+    let dealt, pile, starter;
+    do {
+      const result = dealCards(playerList.length);
+      dealt = result.hands;
+      pile = result.drawPile;
+      starter = findStartingPlayer(dealt);
+    } while (!starter); // reshuffle & redeal if no 11 was dealt to anyone at all
+
+    const openedBoard = applyMove(createBoard(), starter.card);
+    const { hand: startingHand } = removeCard(dealt[starter.playerIndex], starter.card);
+    dealt[starter.playerIndex] = startingHand;
+
+    setHands(dealt);
+    setBoard(openedBoard);
+    setDrawPile(pile);
+    setTurnPlayCount(1); // the forced opening 11 counts as this player's mandatory play
+    setCurrentIndex(starter.playerIndex);
+    turnTokenRef.current += 1;
+    setLastAction({ type: "open", playerIndex: starter.playerIndex, card: starter.card });
+    setRoundWinnerIndex(null);
+    setRoundScores({});
+    setSelectedCard(null);
+    setDrawPreview([]);
+    setIsDrawing(false);
+    setDrawStatus("");
+    drawInProgressRef.current = false;
+    prevTurnRef.current = null;
+    setScreen("playing");
+    Sound.place();
+  };
+
+  const startMatch = () => {
+    const total = opponentCount + 1;
+    const newPlayers = [{ name: "You", isBot: false }];
+    for (let i = 1; i < total; i++) newPlayers.push({ name: `CPU ${i}`, isBot: true });
+    setPlayers(newPlayers);
+    setRoundNumber(1);
+    setCumulativeScores(Object.fromEntries(newPlayers.map((_, i) => [i, 0])));
+    dealRoundAndBegin(newPlayers);
+  };
+
+  const nextRound = () => {
+    setRoundNumber((n) => n + 1);
+    dealRoundAndBegin(players);
+  };
+
+  const newMatch = () => setScreen("setup");
+
+  // ---- turn advancement ----
+  const advanceTurn = (fromIndex) => (fromIndex + 1) % players.length;
+
+  const checkRoundEnd = (handsSnapshot) => {
+    const idx = handsSnapshot.findIndex((h) => h.length === 0);
+    if (idx === -1) return false;
+    const roundPoints = {};
+    handsSnapshot.forEach((h, i) => { roundPoints[i] = calculatePenalty(h); });
+    setRoundScores(roundPoints);
+    setCumulativeScores((prev) => {
+      const next = { ...prev };
+      handsSnapshot.forEach((h, i) => { next[i] = (next[i] || 0) + roundPoints[i]; });
+      return next;
+    });
+    setRoundWinnerIndex(idx);
+    setScreen(roundNumber >= roundsToPlay ? "matchOver" : "roundOver");
+    return true;
+  };
+
+  // ---- human plays a card (turn stays active — you may play more, or End Turn once you've played at least one) ----
+  const playCard = useCallback((card) => {
+    if (!isMyTurn) { Sound.error(); return; }
+    if (!isValidMove(board, card)) { showError("That card can't go there."); return; }
+    const { hand: newHand, removed } = removeCard(hands[0], card);
+    if (!removed) return;
+
+    const newBoard = applyMove(board, card);
+    const newHands = [...hands];
+    newHands[0] = newHand;
+
+    setBoard(newBoard);
+    setHands(newHands);
+    setSelectedCard(null);
+    setTurnPlayCount((n) => n + 1);
+    setLastAction({ type: "play", playerIndex: 0, card });
+    Sound.place();
+
+    checkRoundEnd(newHands); // if this emptied the hand, the round ends; otherwise turn stays with you
+  }, [board, hands, isMyTurn, roundNumber, roundsToPlay]);
+
+  const handleCardTap = (card) => {
+    if (!isMyTurn) { Sound.error(); return; }
+    if (selectedCard && selectedCard.color === card.color && selectedCard.value === card.value) { setSelectedCard(null); return; }
+    setSelectedCard(card);
+  };
+  const handleRowTap = (color) => {
+    if (!selectedCard) return;
+    if (selectedCard.color !== color) { Sound.error(); return; }
+    playCard(selectedCard);
+  };
+  const handleDrop = (color) => (e) => {
+    e.preventDefault();
+    setDragOverColor(null);
+    const data = e.dataTransfer.getData("text/plain");
+    if (!data) return;
+    const card = JSON.parse(data);
+    if (card.color !== color) { Sound.error(); return; }
+    playCard(card);
+  };
+
+  const humanCanPlayAnything = hands[0] ? hasAnyValidMove(board, hands[0]) : false;
+
+  // Ending your turn is only available once you've played your mandatory
+  // first card (if you had a legal move) — after that you may stop even
+  // with legal plays remaining, which is real tactical withholding.
+  const handleEndTurn = () => {
+    if (!isMyTurn || turnPlayCount < 1) return;
+    setLastAction({ type: "pass", playerIndex: 0 });
+    Sound.pass();
+    setCurrentIndex(advanceTurn(0));
+    setTurnPlayCount(0);
+    turnTokenRef.current += 1;
+  };
+
+  // ---- forced draw sequence: draw up to 3 cards, one at a time, playing
+  // ---- forced draw: resolved ATOMICALLY via resolveForcedDraw (pure,
+  // synchronous, no timers) so the real game state commits instantly and
+  // can never get stuck or lose a card. The preview strip and pacing below
+  // are purely cosmetic — if a timer here is ever delayed for any reason,
+  // the worst case is the preview lingers a bit longer, never a lost card
+  // or a frozen turn. ----
+  const runForcedDraw = useCallback((playerIndex) => {
+    const isHuman = playerIndex === 0;
+    const result = resolveForcedDraw(drawPile, hands, board, playerIndex);
+
+    // Commit real state immediately — this is the only part that matters
+    // for correctness, and it happens in one synchronous step.
+    setDrawPile(result.pile);
+    setHands(result.hands);
+    if (result.playedCard) setBoard(result.board);
+    setLastAction(
+      result.playedCard
+        ? { type: "play", playerIndex, card: result.playedCard }
+        : { type: "draw", playerIndex, card: result.drawnCards[result.drawnCards.length - 1] || null }
+    );
+    Sound.draw();
+    if (result.playedCard) Sound.place(); else Sound.pass();
+    setBotThinking(false);
+
+    // Cosmetic preview for the human only (bots' hands aren't shown anyway).
+    if (isHuman) {
+      setDrawPreview(result.drawnCards);
+      setDrawStatus(
+        result.playedCard
+          ? `Drew ${result.drawnCards.map((c) => `${COLOR_LABEL[c.color]} ${c.value}`).join(", ")} — ${COLOR_LABEL[result.playedCard.color]} ${result.playedCard.value} was playable, playing it now. Turn ends.`
+          : result.drawnCards.length > 0
+          ? `Drew ${result.drawnCards.map((c) => `${COLOR_LABEL[c.color]} ${c.value}`).join(", ")} — none playable, added to hand. Turn ends.`
+          : `Draw pile was empty — nothing to draw. Turn ends.`
+      );
+      setTimeout(() => {
+        setDrawPreview([]);
+        setDrawStatus("");
+        setIsDrawing(false);
+      }, 1800); // purely cosmetic — game state above has already committed
+    }
+
+    // Rule: a forced-draw sequence always ends your turn, whether or not
+    // a card ended up playable.
+    if (!checkRoundEnd(result.hands)) {
+      setCurrentIndex(advanceTurn(playerIndex));
+      setTurnPlayCount(0);
+    }
+  }, [drawPile, hands, board, players.length]);
+
+  const handleDrawCard = () => {
+    if (drawInProgressRef.current) return; // synchronous guard against a same-tick double-tap
+    try {
+      if (!isMyTurn || humanCanPlayAnything || turnPlayCount >= 1 || isDrawing) return;
+      drawInProgressRef.current = true;
+      setIsDrawing(true); // instant feedback the tap registered, even before the first card appears
+      setDrawStatus("Drawing…");
+      setBotThinking(false);
+      runForcedDraw(0); // fully synchronous — resolves completely before this call returns
+      drawInProgressRef.current = false;
+    } catch (e) {
+      drawInProgressRef.current = false;
+      setIsDrawing(false);
+      setDrawStatus("");
+      if (window.showBootError) window.showBootError("Draw error: " + e.message);
+      console.error(e);
+    }
+  };
+
+  // ---- bot turn: either a mandatory-play plan, a continuation-only plan
+  // (if this bot already played its mandatory card this turn — e.g. the
+  // forced round-opening 11), or a forced draw ----
+  useEffect(() => {
+    if (screen !== "playing") return;
+    const player = players[currentIndex];
+    if (!player || !player.isBot) return;
+
+    const myToken = turnTokenRef.current;
+    setBotThinking(true);
+    const startingHand = hands[currentIndex];
+    const alreadyPlayedThisTurn = turnPlayCount >= 1;
+
+    if (!alreadyPlayedThisTurn && !hasAnyValidMove(board, startingHand)) {
+      botTimeoutRef.current = setTimeout(() => runForcedDraw(currentIndex), 850);
+      return () => clearTimeout(botTimeoutRef.current);
+    }
+
+    const plan = alreadyPlayedThisTurn
+      ? planBotContinuation(board, startingHand)
+      : planBotPlayTurn(board, startingHand);
+    let step = 0;
+    let workingBoard = board;
+    let workingHands = hands;
+
+    function playNext() {
+      if (turnTokenRef.current !== myToken) return; // superseded — do not touch state
+      if (step < plan.length) {
+        const card = plan[step];
+        const { hand: newHand } = removeCard(workingHands[currentIndex], card);
+        workingBoard = applyMove(workingBoard, card);
+        workingHands = [...workingHands];
+        workingHands[currentIndex] = newHand;
+        setBoard(workingBoard);
+        setHands(workingHands);
+        setLastAction({ type: "play", playerIndex: currentIndex, card });
+        Sound.place();
+        step++;
+        if (checkRoundEnd(workingHands)) { setBotThinking(false); return; }
+        botTimeoutRef.current = setTimeout(playNext, 550);
+      } else {
+        setBotThinking(false);
+        setLastAction({ type: "pass", playerIndex: currentIndex });
+        setCurrentIndex(advanceTurn(currentIndex));
+        setTurnPlayCount(0);
+        turnTokenRef.current += 1;
+      }
+    }
+    botTimeoutRef.current = setTimeout(playNext, 850);
+    return () => clearTimeout(botTimeoutRef.current);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [currentIndex, screen]);
+
+  // ---- watchdog: safety net only — a bot turn can legitimately take a
+  // while if it's chaining many plays (550ms apart), so this is set well
+  // above any realistic turn duration. If it ever does fire, it invalidates
+  // the turn token first so any in-flight chain aborts cleanly instead of
+  // racing with the forced pass. ----
+  useEffect(() => {
+    if (screen !== "playing") return;
+    const player = players[currentIndex];
+    if (!player || !player.isBot) return;
+    const myToken = turnTokenRef.current;
+    const watchdog = setTimeout(() => {
+      if (turnTokenRef.current !== myToken) return; // turn already ended normally
+      turnTokenRef.current += 1; // invalidate any stale in-flight chain first
+      clearTimeout(botTimeoutRef.current);
+      drawInProgressRef.current = false;
+      setBotThinking(false);
+      setLastAction({ type: "pass", playerIndex: currentIndex });
+      setCurrentIndex((idx) => (idx + 1) % players.length);
+      setTurnPlayCount(0);
+    }, 20000);
+    return () => clearTimeout(watchdog);
+  }, [currentIndex, screen, players.length]);
+
+  // ---- cosmetic-only safety net: the actual draw result (hand/board/turn)
+  // already committed synchronously inside runForcedDraw by the time this
+  // could ever run. The only thing that could possibly still be pending is
+  // the purely decorative preview-clearing timeout. If that somehow never
+  // fires (e.g. the tab was backgrounded), this just tidies up the leftover
+  // visual state — it must NOT touch hands/board/currentIndex, since doing
+  // so again would double-apply an already-committed turn. ----
+  useEffect(() => {
+    if (!isDrawing) return;
+    const failsafe = setTimeout(() => {
+      setDrawPreview([]);
+      setDrawStatus("");
+      setIsDrawing(false);
+    }, 4000);
+    return () => clearTimeout(failsafe);
+  }, [isDrawing]);
+
+  // ---- turn-change SFX ----
+  useEffect(() => {
+    if (screen !== "playing") return;
+    const myTurnNow = currentIndex === 0;
+    if (myTurnNow && prevTurnRef.current !== true) Sound.yourTurn();
+    prevTurnRef.current = myTurnNow;
+  }, [currentIndex, screen]);
+
+  useEffect(() => {
+    if (screen === "roundOver" || screen === "matchOver") Sound.victory();
+  }, [screen]);
+
+  // ---------------- SETUP + HOW TO PLAY SCREEN ----------------
+  if (screen === "setup") {
+    return (
+      <div className="h-[100dvh] flex flex-col">
+        <div className="marquee mx-2 mt-2 px-6 py-3 text-center shrink-0">
+          <h1 className="font-display text-xl md:text-2xl" style={{ color: "var(--brass)" }}>ELFER RAUS!</h1>
+          <p className="text-[10px] opacity-70 mt-1">solo vs computer</p>
+        </div>
+
+        {/* Scrollable middle: rules + options. Only this area scrolls — the
+            Start button below never moves out of reach. */}
+        <div className="flex-1 overflow-y-auto px-4 py-3 flex flex-col gap-5 w-full max-w-md mx-auto">
+          <div>
+            <h2 className="font-display text-xs mb-2" style={{ color: "var(--brass)" }}>HOW TO PLAY</h2>
+            <ul className="text-xs leading-relaxed opacity-90 flex flex-col gap-1.5 list-disc pl-4">
+              <li>The board has four colored rows, each built outward from <b>11</b>.</li>
+              <li>Only an <b>11</b> can open a row. Once open, play the next number up or down in that color (10 next to 11, then 9, or 12, then 13…).</li>
+              <li>If you hold a legal card, you must play at least one — then you may keep playing more, or tap <b>End Turn</b> to stop early on purpose, even with legal plays left, to block opponents.</li>
+              <li>No legal card? You must draw from the draw pile — one at a time, up to 3. If a drawn card matches, you play it immediately and your turn ends there; if none of the 3 match, your turn ends anyway and you keep them.</li>
+              <li>If the draw pile is empty when you'd need to draw, you simply pass.</li>
+              <li>First to empty their hand wins the round. Everyone else scores penalty points equal to the value of the cards left in hand. Lowest total after all rounds wins the match.</li>
+            </ul>
+          </div>
+
+          <div>
+            <p className="text-xs opacity-60 mb-2">Number of CPU opponents</p>
+            <div className="flex gap-2">
+              {[1, 2, 3].map((n) => (
+                <button key={n} className={`opt-btn flex-1 ${opponentCount === n ? "active" : ""}`} onClick={() => setOpponentCount(n)}>{n}</button>
+              ))}
+            </div>
+          </div>
+          <div>
+            <p className="text-xs opacity-60 mb-2">Rounds to play</p>
+            <div className="flex gap-2">
+              {[1, 3, 5].map((n) => (
+                <button key={n} className={`opt-btn flex-1 ${roundsToPlay === n ? "active" : ""}`} onClick={() => setRoundsToPlay(n)}>{n}</button>
+              ))}
+            </div>
+          </div>
+        </div>
+
+        {/* Pinned footer — always visible, never requires scrolling to find */}
+        <div className="shrink-0 px-4 py-3 border-t" style={{ borderColor: "var(--felt-line)" }}>
+          <button className="btn w-full max-w-md mx-auto block" onClick={startMatch}>Start Match</button>
+        </div>
+      </div>
+    );
+  }
+
+  // ---------------- ROUND OVER (more rounds remain) ----------------
+  if (screen === "roundOver") {
+    const winner = players[roundWinnerIndex];
+    return (
+      <div className="h-[100dvh] flex flex-col items-center justify-center gap-6 px-4 overflow-y-auto">
+        <div className="marquee px-8 py-4 text-center">
+          <p className="text-xs opacity-70">round {roundNumber} of {roundsToPlay} complete</p>
+          <h1 className="font-display text-xl" style={{ color: "var(--brass)" }}>
+            {roundWinnerIndex === 0 ? "You win the round!" : `${winner?.name} wins the round!`}
+          </h1>
+        </div>
+        <div className="w-full max-w-xs">
+          <p className="text-xs opacity-60 mb-2">Round points added / running total</p>
+          <ul className="flex flex-col gap-2">
+            {players.map((p, i) => (
+              <li key={i} className="board-row" style={{ minHeight: "auto", flexDirection: "row", alignItems: "center", justifyContent: "space-between" }}>
+                <span>{i === 0 ? "You" : p.name}</span>
+                <span className="font-num">+{roundScores[i] ?? 0} &nbsp;→&nbsp; {cumulativeScores[i] ?? 0}</span>
+              </li>
+            ))}
+          </ul>
+        </div>
+        <button className="btn" onClick={nextRound}>Next Round</button>
+      </div>
+    );
+  }
+
+  // ---------------- MATCH OVER (final round complete) ----------------
+  if (screen === "matchOver") {
+    const standings = players.map((p, i) => ({ i, name: i === 0 ? "You" : p.name, total: cumulativeScores[i] ?? 0 }))
+      .sort((a, b) => a.total - b.total);
+    return (
+      <div className="h-[100dvh] flex flex-col items-center justify-center gap-6 px-4 overflow-y-auto">
+        <div className="marquee px-8 py-4 text-center">
+          <p className="text-xs opacity-70">match complete — {roundsToPlay} round{roundsToPlay > 1 ? "s" : ""}</p>
+          <h1 className="font-display text-xl" style={{ color: "var(--brass)" }}>
+            {standings[0].i === 0 ? "You win the match!" : `${standings[0].name} wins the match!`}
+          </h1>
+        </div>
+        <div className="w-full max-w-xs">
+          <p className="text-xs opacity-60 mb-2">Final standings (lowest total wins)</p>
+          <ul className="flex flex-col gap-2">
+            {standings.map((s, rank) => (
+              <li key={s.i} className="board-row" style={{ minHeight: "auto", flexDirection: "row", alignItems: "center", justifyContent: "space-between" }}>
+                <span>{rank + 1}. {s.name}</span>
+                <span className="font-num">{s.total}</span>
+              </li>
+            ))}
+          </ul>
+        </div>
+        <button className="btn" onClick={newMatch}>New Match</button>
+      </div>
+    );
+  }
+
+  // ---------------- ACTIVE GAME ----------------
+  const currentPlayer = players[currentIndex];
+  const myHand = hands[0] || [];
+
+  return (
+    <div className="h-[100dvh] flex flex-col">
+      <div className={`flex items-center justify-between px-3 py-2 marquee mx-2 mt-2 rounded ${isMyTurn ? "turn-pulse" : ""}`}>
+        <span className="font-display text-xs" style={{ color: "var(--brass)" }}>ROUND {roundNumber}/{roundsToPlay}</span>
+        <span className="text-sm">
+          {isMyTurn ? <b style={{ color: "var(--brass)" }}>Your turn</b> : (
+            <span>{currentPlayer?.name}'s turn{botThinking && <span className="thinking-dots ml-1"><span>.</span><span>.</span><span>.</span></span>}</span>
+          )}
+        </span>
+        <span className="text-xs opacity-60 font-num" title="Face-down cards left in the draw pile">🂠 {drawPile.length}</span>
+      </div>
+
+      {errorMsg && (
+        <div className="mx-2 mt-2 text-xs px-3 py-1.5 rounded text-center" style={{ background: "var(--red)", color: "#3a0006" }}>{errorMsg}</div>
+      )}
+
+      <div className="tabletop">
+        {COLORS.map((color) => (
+          <ColorRow
+            key={color}
+            color={color}
+            row={board[color]}
+            dragOver={dragOverColor === color}
+            onDragOver={() => setDragOverColor(color)}
+            onDragLeave={() => setDragOverColor(null)}
+            onDrop={handleDrop(color)}
+            onRowTap={() => handleRowTap(color)}
+          />
+        ))}
+      </div>
+
+      <div className="flex gap-2 px-3 overflow-x-auto text-[11px] opacity-70 pb-1">
+        {players.map((p, i) => (
+          <span key={i} className={i === currentIndex ? "font-bold" : ""} style={i === currentIndex ? { color: "var(--brass)" } : {}}>
+            {i === 0 ? "You" : p.name} ({(hands[i] || []).length})
+          </span>
+        ))}
+      </div>
+
+      {isMyTurn && (
+        <div className="flex gap-2 justify-center px-3 pb-2">
+          {turnPlayCount < 1 && !humanCanPlayAnything ? (
+            <button className="btn btn-ghost text-xs" onClick={handleDrawCard} disabled={isDrawing}>
+              {isDrawing ? "Drawing…" : drawPile.length === 0 ? "Pass (draw pile empty)" : "Draw Card (no legal move)"}
+            </button>
+          ) : (
+            <button className="btn btn-ghost text-xs" disabled={turnPlayCount < 1} onClick={handleEndTurn}>
+              {humanCanPlayAnything ? "End Turn (hold back cards)" : "End Turn"}
+            </button>
+          )}
+        </div>
+      )}
+
+      {isMyTurn && drawStatus && (
+        <div className="mx-3 mb-1 text-xs px-3 py-1.5 rounded text-center font-num" style={{ background: "rgba(201,162,75,0.15)", border: "1px solid var(--brass)", color: "var(--brass)" }}>
+          {drawStatus}
+        </div>
+      )}
+
+      {isMyTurn && drawPreview.length > 0 && (
+        <div className="draw-preview-strip">
+          <span className="text-[9px] opacity-50 mr-1">drawn:</span>
+          {drawPreview.map((card, i) => (
+            <div key={`preview-${card.color}-${card.value}-${i}`} className="preview-card-pop">
+              <Card card={card} playable={false} onClick={() => {}} />
+            </div>
+          ))}
+        </div>
+      )}
+
+      <div className="hand-strip border-t" style={{ borderColor: "var(--felt-line)" }}>
+        {myHand.map((card, i) => {
+          const playable = isValidMove(board, card);
+          const isSelected = selectedCard && selectedCard.color === card.color && selectedCard.value === card.value;
+          const justEntered = lastAction && lastAction.type === "draw" && lastAction.playerIndex === 0
+            && lastAction.card.color === card.color && lastAction.card.value === card.value;
+          return (
+            <div
+              key={`${card.color}-${card.value}-${i}`}
+              className={justEntered ? "hand-card-enter" : ""}
+              draggable={isMyTurn}
+              onDragStart={(e) => e.dataTransfer.setData("text/plain", JSON.stringify(card))}
+            >
+              <Card card={card} selected={isSelected} playable={isMyTurn && playable} onClick={() => handleCardTap(card)} />
+            </div>
+          );
+        })}
+      </div>
+    </div>
+  );
+}
+
+try {
+  ReactDOM.createRoot(document.getElementById("root")).render(<App />);
+} catch (e) {
+  if (window.showBootError) window.showBootError("Render error: " + e.message);
+  console.error(e);
+}
+</script>
+</body>
+</html>
